@@ -13,18 +13,23 @@ import time
 jax.config.update("jax_enable_x64", True)
 
 
-E_CUT = 100
-G_VEC_SIZE = [48, ] * 3
+E_CUT = 50
+G_VEC_SIZE = [80, ] * 3
 
-CONVERGENCE = 1e-6
-NUM_BANDS = 12
+CONVERGENCE = 1e-8
+NUM_BANDS = 100
 PATH = "/home/aiops/litb/projects/jrystal_exp2/"
 
 SCF_MAX_ITER = 200
+CRYSTAL_TYPE = "si8"
+# CRYSTAL_TYPE = "diamond"
+K_MESH = [1, ] * 3
+LOBPCG_MAX_ITER = 6
+DIIS_MAX_HIST = 8
+MIXING_BETA = 0.8
 
-K_MESH = [1, 1, 1]
 
-crystal = jr.crystal.Crystal.create_from_file(f"{PATH}diamond.xyz")
+crystal = jr.crystal.Crystal.create_from_file(f"{PATH}{CRYSTAL_TYPE}.xyz")
 
 mask = jr.grid.spherical_mask(crystal.cell_vectors, G_VEC_SIZE, E_CUT)
 print(f"mask ratio: {jnp.mean(mask):.4f}. num of G vectors {jnp.sum(mask)}")
@@ -39,7 +44,6 @@ param_coeff = jr.pw.param_init(
 param_coeff['w_re'].shape
 coeff_init = param_coeff['w_re'] + 1.j * param_coeff['w_im']
 coeff_init = jnp.linalg.qr(coeff_init)[0]  # [s k g band]
-
 
 
 def expand(c):
@@ -93,8 +97,7 @@ def update(coeff_compact, effective_dens):
     v0=coeff_compact.reshape(s*k, g, b),
     which="smallest",
     preconditioner=precond,
-    seed=10,
-    maxit=20,
+    maxit=LOBPCG_MAX_ITER,
     tol=1e-8,
   )    # eigval: [s*k, b], evec: [s*k, g, b]
 
@@ -126,7 +129,7 @@ def scf(iter, convergence_tol):
   time_total = 0
 
   diis_state = diis_init(
-    max_hist=10, density_shape=dens.shape, dtype=dens.dtype
+    max_hist=DIIS_MAX_HIST, density_shape=dens.shape, dtype=dens.dtype
   )
 
   for i in range(iter):
@@ -158,13 +161,13 @@ def scf(iter, convergence_tol):
       )
       break
 
-    # dens = mixing(dens_new, dens, 0.98**i)
     dens_error = dens_new - dens
-    diis_state, dens = diis_update(diis_state, dens_new, dens_error, 1e-8)
+    diis_state, dens_new = diis_update(diis_state, dens_new, dens_error, 1e-8)
+    dens = mixing(dens_new, dens, MIXING_BETA)
     etol = etol_new
     coeff_compact = coeff_compact_new
 
-    print(eigval_new)
+    # print(eigval_new)
     print(f"SCF iteration {i+1} completed. Sum of eigenvalues: {etol: .6e}")
     print(
       f"change of coeffcient (avg.): {dc: .6e}, change of energy: {de: .6e}"
@@ -193,7 +196,7 @@ def scf(iter, convergence_tol):
   lda_x = jr.energy.xc_energy(dens, g_vec, crystal.vol, "lda_x")
   total_energy = kin + har + ext + lda_x + ewald
 
-  print(f"Total energy:   \t {total_energy: .6f} Eh")
+  print(f"Total energy:   \t {total_energy: .8f} Eh")
   print(f"Ewald energy:   \t {ewald: .6f} Eh")
   print(f"Kinetic energy: \t {kin: .6f} Eh")
   print(f"Hartree energy: \t {har: .6f} Eh")
